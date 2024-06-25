@@ -12,6 +12,7 @@ import time
 from InquirerPy import inquirer
 from InquirerPy.base.control import Choice
 from langchain_openai.chat_models import AzureChatOpenAI, ChatOpenAI
+from langchain_community.chat_models import BedrockChat
 from langchain.schema import HumanMessage, SystemMessage
 
 from shell_ai.config import load_config
@@ -23,9 +24,11 @@ class SelectSystemOptions(Enum):
     OPT_NEW_COMMAND = "Enter a new command"
 
 
-class OpenAIOptions(Enum):
+class LlmProvider(Enum):
     openai = "openai"
     azure = "azure"
+    bedrock = "bedrock"
+    vertex = "vertex"
 
 class Colors:
     WARNING = '\033[93m'
@@ -35,18 +38,18 @@ class Colors:
 def main():
     """
     Required environment variables:
-    - OPENAI_API_KEY: Your OpenAI API key. You can find this on https://beta.openai.com/account/api-keys
+    - LLM_API_TYPE: Your LLM provider, one of bedrock, azure, openai, vertex.
 
     Allowed envionment variables:
-    - OPENAI_MODEL: The name of the OpenAI model to use. Defaults to `gpt-3.5-turbo`.
+    - LLM_MODEL: The name of the LLM model to use. Defaults to `anthropic.claude-v2:1`.
     - SHAI_SUGGESTION_COUNT: The number of suggestions to generate. Defaults to 3.
     - SHAI_SKIP_CONFIRM: Skip confirmation of the command to execute. Defaults to false. Set to `true` to skip confirmation.
     - SHAI_SKIP_HISTORY: Skip writing selected command to shell history (currently supported shells are zsh, bash, csh, tcsh, ksh, and fish). Defaults to false. Set to `true` to skip writing.
     - CTX: Allow the assistant to keep the console outputs as context allowing the LLM to produce more precise outputs. IMPORTANT: the outputs will be sent to OpenAI through their API, be careful if any sensitive data. Default to false.
 
-    Additional required environment variables for Azure Deployments:
+    Additional required environment variables for Azure or ChatGpt Deployments:
     - OPENAI_API_KEY: Your OpenAI API key. You can find this on https://beta.openai.com/account/api-keys
-    - OPENAI_API_TYPE: "azure"
+    - LLM_API_TYPE: "azure"
     - AZURE_API_BASE
     - AZURE_DEPLOYMENT_NAME
     """
@@ -56,15 +59,6 @@ def main():
     # Load keys of the configuration into environment variables
     for key, value in loaded_config.items():
         os.environ[key] = str(value)
-
-    if os.environ.get("OPENAI_API_KEY") is None:
-        print(
-            "Please set the OPENAI_API_KEY environment variable to your OpenAI API key."
-        )
-        print(
-            "You can also create `config.json` under `~/.config/shell-ai/` to set the API key, see README.md for more information."
-        )
-        sys.exit(1)
 
     TEXT_EDITORS = ("vi", "vim", "emacs", "nano", "ed", "micro", "joe", "nvim")
 
@@ -81,8 +75,8 @@ def main():
         # Consume all arguments after the script name as a single sentence
         prompt = " ".join(sys.argv[1:])
 
-    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-3.5-turbo")
-    OPENAI_MAX_TOKENS = os.environ.get("OPENAI_MAX_TOKENS", None)
+    LLM_MODEL = os.environ.get("LLM_MODEL", "anthropic.claude-v2:1")
+    LLM_MAX_TOKENS = os.environ.get("LLM_MAX_TOKENS", 1000)
     OPENAI_API_BASE = os.environ.get("OPENAI_API_BASE", None)
     OPENAI_ORGANIZATION = os.environ.get("OPENAI_ORGANIZATION", None)
     OPENAI_PROXY = os.environ.get("OPENAI_PROXY", None)
@@ -90,38 +84,53 @@ def main():
 
     # required configs just for azure openai deployments (faster)
 
-    OPENAI_API_TYPE = os.environ.get("OPENAI_API_TYPE", "openai")
+    LLM_API_TYPE = os.environ.get("LLM_API_TYPE", "bedrock")
     OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2023-05-15")
-    if OPENAI_API_TYPE not in OpenAIOptions.__members__:
+    if LLM_API_TYPE not in LlmProvider.__members__:
         print(
-            f"Your OPENAI_API_TYPE is not valid. Please choose one of {OpenAIOptions.__members__}"
+            f"Your LLM_API_TYPE is not valid. Please choose one of {LlmProvider.__members__}"
         )
         sys.exit(1)
     AZURE_DEPLOYMENT_NAME = os.environ.get("AZURE_DEPLOYMENT_NAME", None)
     AZURE_API_BASE = os.environ.get("AZURE_API_BASE", None)
-    if OPENAI_API_TYPE == "azure" and AZURE_DEPLOYMENT_NAME is None:
+    if LLM_API_TYPE == "azure" and AZURE_DEPLOYMENT_NAME is None:
         print(
             "Please set the AZURE_DEPLOYMENT_NAME environment variable to your Azure deployment name."
         )
         sys.exit(1)
-    if OPENAI_API_TYPE == "azure" and AZURE_API_BASE is None:
+    if LLM_API_TYPE == "azure" and AZURE_API_BASE is None:
         print(
             "Please set the AZURE_API_BASE environment variable to your Azure API base."
         )
         sys.exit(1)
-
+    if os.environ.get("OPENAI_API_KEY") is None and (LLM_API_TYPE == "azure" or LLM_API_TYPE == "openai"):
+        print(
+            "Please set the OPENAI_API_KEY environment variable to your OpenAI API key."
+        )
+        print(
+            "You can also create `config.json` under `~/.config/shell-ai/` to set the API key, see README.md for more information."
+        )
+        sys.exit(1)
+    if os.environ.get("AWS_PROFILE") is None and (LLM_API_TYPE == "bedrock"):
+        print(
+            "Please set the AWS_PROFILE environment variable."
+        )
+        print(
+            "You can also create `config.json` under `~/.config/shell-ai/` to set the AWS_PROFILE key, see README.md for more information."
+        )
+        sys.exit(1)        
     # End loading configuration
 
-    if OPENAI_API_TYPE == "openai":
+    if LLM_API_TYPE == "openai":
         chat = ChatOpenAI(
-            model_name=OPENAI_MODEL,
+            model_name=LLM_MODEL,
             n=SHAI_SUGGESTION_COUNT,
             openai_api_base=OPENAI_API_BASE,
             openai_organization=OPENAI_ORGANIZATION,
             openai_proxy=OPENAI_PROXY,
-            max_tokens=OPENAI_MAX_TOKENS,
+            max_tokens=LLM_MAX_TOKENS,
         )
-    if OPENAI_API_TYPE == "azure":
+    if LLM_API_TYPE == "azure":
         chat = AzureChatOpenAI(
             n=SHAI_SUGGESTION_COUNT,
             openai_api_base=AZURE_API_BASE,
@@ -131,6 +140,9 @@ def main():
             openai_api_type="azure",
             temperature=0,
         )
+    if LLM_API_TYPE == "bedrock":
+        chat = BedrockChat(model_id=LLM_MODEL,model_kwargs={"temperature": 0,
+                "max_tokens": LLM_MAX_TOKENS,})
 
     if platform.system() == "Linux":
         info = platform.freedesktop_os_release()
@@ -140,18 +152,22 @@ def main():
 
 
     def get_suggestions(prompt):
-        system_message = SystemMessage(
-            content="""You are an expert at using shell commands. I need you to provide a response in the format `{"command": "your_shell_command_here"}`. """ + plaform_string + """ Only provide a single executable line of shell code as the value for the "command" key. Never output any text outside the JSON structure. The command will be directly executed in a shell. For example, if I ask to display the message 'Hello, World!', you should respond with ```json\n{"command": "echo 'Hello, World!'"}```. Between [], these are the last 1500 tokens from the previous command's output, you can use them as context: ["""+ContextManager.get_ctx()+"""], if it's None, don't take it into consideration."""
-        )
+        system_message = """You are an expert at using shell commands.
+          Use the following JSON format `{"command": "your_shell_command_here"}`. """ + plaform_string + """ Only provide a single executable line of shell code as the value for the "command" key.
+            Never output any text outside the JSON structure. The command will be directly executed in a shell. 
+              For example, if I ask: display the message 'Hello, World!', you should respond with ```json\n{"command": "echo 'Hello, World!'"}```. 
+              Between [], these are the last 1500 tokens from the previous command's output, you can use them as context: ["""+ContextManager.get_ctx()+"""], if it's None, don't take it into consideration."""
+        
+
         response = chat.generate(
             messages=[
                 [
-                    system_message,
+                    SystemMessage(content=system_message),
                     HumanMessage(content=f"Here's what I'm trying to do: {prompt}"),
                 ]
             ]
         )
-
+        print(f"response: {response}")
         # Extract commands from the JSON response
         commands = []
         for msg in response.generations[0]:
@@ -172,7 +188,7 @@ def main():
 
     if prompt:
         if CTX == 'True':
-            print(f"{Colors.WARNING}WARNING{Colors.END} Context mode: datas will be sent to OpenAI, be careful if any sensitive datas...\n")
+            print(f"{Colors.WARNING}WARNING{Colors.END} Context mode: datas will be sent to LLM {LLM_API_TYPE}, be careful if any sensitive datas...\n")
             print(f">>> {os.getcwd()}") 
         while True:
             options = get_suggestions(prompt)
